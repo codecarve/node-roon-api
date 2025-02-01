@@ -6,25 +6,35 @@ if (typeof(WebSocket) == "undefined") global.WebSocket = require('ws');
 function Transport(ip, port, logger) {
     this.host = ip;
     this.port = port;
+    this.logger = logger;
 
     this.interval = null;
     this.is_alive = null;
+    this.reconnectDelay = 5000; // 5 seconds delay before attempting to reconnect
 
-    this.ws = new WebSocket("ws://" + ip + ":" + port + "/api");
+    this.connect();
+}
+
+Transport.prototype.connect = function() {
+    this.ws = new WebSocket("ws://" + this.host + ":" + this.port + "/api");
     if (typeof(window) != "undefined") this.ws.binaryType = 'arraybuffer';
-    this.logger = logger;
 
     this.ws.on('pong', () => this.is_alive = true);
     this.ws.onopen = () => {
         this.is_alive = true;
         this.interval = setInterval(() => {
-            if (this.is_alive === false) {
-                logger.log(`Roon API Connection to ${this.host}:${this.port} closed due to missed heartbeat`);
-                return this.ws.terminate();
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                if (this.is_alive === false) {
+                    this.logger.log(`Roon API Connection to ${this.host}:${this.port} closed due to missed heartbeat`);
+                    return this.ws.terminate();
+                }
+                this.is_alive = false;
+                this.ws.ping();
+            } else {
+                clearInterval(this.interval);
+                this.interval = null;
             }
-            this.is_alive = false;
-            this.ws.ping();
-        }, 10000)
+        }, 10000);
 
         this._isonopencalled = true;
         this.onopen();
@@ -35,9 +45,13 @@ function Transport(ip, port, logger) {
         clearInterval(this.interval);
         this.interval = null;
         this.close();
+        setTimeout(() => this.connect(), this.reconnectDelay); // Attempt to reconnect
     };
 
     this.ws.onerror = (err) => {
+        this.logger.log("WebSocket error:", err);
+        clearInterval(this.interval);
+        this.interval = null;
         this.onerror();
     }
 
@@ -49,7 +63,7 @@ function Transport(ip, port, logger) {
         }
         this.onmessage(msg);
     };
-}
+};
 
 Transport.prototype.send = function(buf) {
     this.ws.send(buf, { binary: true, mask: true});
